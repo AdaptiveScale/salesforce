@@ -63,6 +63,19 @@ public class SalesforceSourceConfig extends SalesforceBaseSourceConfig {
   @Description("Schema of the data to read. Can be imported or fetched by clicking the `Get Schema` button.")
   private String schema;
 
+  @Name(SalesforceSourceConstants.PROPERTY_PK_CHUNK_ENABLE_NAME)
+  @Macro
+  @Nullable
+  @Description("Primary key (PK) Chunking splits query on large tables into chunks based on the record IDs, or " +
+    "primary keys, of the queried records.")
+  private Boolean enablePKChunk;
+
+  @Name(SalesforceSourceConstants.PROPERTY_CHUNK_SIZE_NAME)
+  @Macro
+  @Nullable
+  @Description("Specify size of chunk. Maximum Size is 250,000. Default Size is 100,000.")
+  private Integer chunkSize;
+
   @VisibleForTesting
   SalesforceSourceConfig(String referenceName,
                          @Nullable String consumerKey,
@@ -78,12 +91,16 @@ public class SalesforceSourceConfig extends SalesforceBaseSourceConfig {
                          @Nullable String offset,
                          @Nullable String schema,
                          @Nullable String securityToken,
-                         @Nullable OAuthInfo oAuthInfo) {
+                         @Nullable OAuthInfo oAuthInfo,
+                         @Nullable Boolean enablePKChunk,
+                         @Nullable Integer chunkSize) {
     super(referenceName, consumerKey, consumerSecret, username, password, loginUrl,
           datetimeAfter, datetimeBefore, duration, offset, securityToken, oAuthInfo);
     this.query = query;
     this.sObjectName = sObjectName;
     this.schema = schema;
+    this.enablePKChunk = enablePKChunk;
+    this.chunkSize = chunkSize;
   }
 
   /**
@@ -161,6 +178,7 @@ public class SalesforceSourceConfig extends SalesforceBaseSourceConfig {
       }
     }
     validateSchema(collector);
+    validatePKChunkSize(collector);
   }
 
   private void validateSchema(FailureCollector collector) {
@@ -201,5 +219,50 @@ public class SalesforceSourceConfig extends SalesforceBaseSourceConfig {
         String.format("Cannot establish connection to Salesforce to describe SObject: '%s'", sObjectName), null)
         .withStacktrace(e.getStackTrace());
     }
+  }
+
+  private void validatePKChunkSize(FailureCollector collector) {
+    if (containsMacro(SalesforceSourceConstants.PROPERTY_PK_CHUNK_ENABLE_NAME)
+      || containsMacro(SalesforceSourceConstants.PROPERTY_CHUNK_SIZE_NAME)) {
+      return;
+    }
+
+    if (!getEnablePKChunk()) {
+      return;
+    }
+
+    if (!containsMacro(SalesforceSourceConstants.PROPERTY_QUERY) && !Strings.isNullOrEmpty(query)) {
+      if (SalesforceQueryParser.isRestrictedPKQuery(query)) {
+          collector.addFailure(
+            String.format("SOQL Query contains restricted clauses when PK Chunk is Enabled. Unsupported query: '%s'.",
+                          query),
+            "Set Enable PK Chunk to false, because 'WHERE' is the only supported conditions clause.")
+            .withConfigProperty(SalesforceSourceConstants.PROPERTY_QUERY);
+        }
+    }
+
+    if (getChunkSize() > SalesforceSourceConstants.MAX_PK_CHUNK_SIZE) {
+      collector.addFailure(
+        String.format("Chunk Size '%d' is bigger that allowed size '%d'.", getChunkSize(),
+                      SalesforceSourceConstants.MAX_PK_CHUNK_SIZE),
+        String.format("Allowed values are between the range of '%d' and '%d'.",
+                      SalesforceSourceConstants.MIN_PK_CHUNK_SIZE, SalesforceSourceConstants.MAX_PK_CHUNK_SIZE))
+        .withConfigProperty(SalesforceSourceConstants.PROPERTY_CHUNK_SIZE_NAME);
+    } else if (getChunkSize() < SalesforceSourceConstants.MIN_PK_CHUNK_SIZE) {
+      collector.addFailure(
+        String.format("Chunk Size %d is lower that allowed size '%d'.", getChunkSize(),
+                      SalesforceSourceConstants.MIN_PK_CHUNK_SIZE),
+        String.format("Allowed values are between the range of '%d' and '%d'.",
+                      SalesforceSourceConstants.MIN_PK_CHUNK_SIZE, SalesforceSourceConstants.MAX_PK_CHUNK_SIZE))
+        .withConfigProperty(SalesforceSourceConstants.PROPERTY_CHUNK_SIZE_NAME);
+    }
+  }
+
+  public boolean getEnablePKChunk() {
+    return enablePKChunk == null ? false : enablePKChunk;
+  }
+
+  public int getChunkSize() {
+    return chunkSize == null ? SalesforceSourceConstants.DEFAULT_PK_CHUNK_SIZE : chunkSize;
   }
 }
